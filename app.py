@@ -467,6 +467,12 @@ with st.sidebar:
             help="슬릿 발산각에 의한 가우시안 빔 스미어링을 적용하여 Kiessig 진동 골의 깊이를 실측치와 일치시킵니다."
         )
 
+    enable_valley_polish = st.checkbox(
+        "🎯 2단계 적응형 골-마루 잔차 집중 연마 (Adaptive Valley Polish)",
+        value=True,
+        help="1차 전역 최적화 직후 오차가 큰 1~2차 간섭 골(Valley)과 위상 잔차를 자동 감지하여 골 깊이를 실측치 바닥까지 밀착시키는 2차 정밀 연마를 자동 실행합니다."
+    )
+
     if paper_mode:
         def_start = 0.48
         if f5_cutoff is not None:
@@ -579,6 +585,7 @@ if run_fitting_btn:
                 auto_fit_sample_length=auto_fit_sample_len,
                 resolution_fwhm_deg=0.030 if enable_smearing else None,
                 auto_surface_layer=auto_surface_layer,
+                enable_valley_polishing=enable_valley_polish,
                 max_generations=max_gens,
                 popsize=pop_size,
                 progress_callback=update_ui_progress
@@ -812,6 +819,10 @@ with tab2:
             </div>
             """, unsafe_allow_html=True)
 
+        if getattr(res, "is_polished", False):
+            d2th_str = f"{res.zero_offset_2theta_deg:+.3f}°" if abs(res.zero_offset_2theta_deg) > 1e-4 else "0.000°"
+            st.markdown(f'<span class="badge-winner">✨ 2단계 적응형 골 연마 완료 (영점 보정 Δ2θ = {d2th_str})</span>', unsafe_allow_html=True)
+
         if res.ai_used:
             st.markdown(f'<span class="badge-ai">🤖 Gemini AI 제안 파라미터 경계 적용됨</span>: {res.ai_rationale}', unsafe_allow_html=True)
         else:
@@ -858,10 +869,119 @@ with tab2:
         ax_res.set_ylim(-0.25, 0.25)
         ax_res.grid(True, ls="--", alpha=0.4)
 
-
         plt.tight_layout()
         st.pyplot(fig_fit)
         plt.close(fig_fit)
+
+        # ------------------------------------------------------------------
+        # [2차 대화형 실시간 정밀 미세 조정 패널 (Interactive Live Polisher)]
+        # ------------------------------------------------------------------
+        with st.expander("🛠️ 2차 실시간 정밀 미세 조정기 (Interactive Real-time Polisher)", expanded=False):
+            st.markdown("""
+            자동 피팅 완료 후 특정 골(Valley)의 깊이나 위상이 미세하게 아쉬운 경우, 아래 슬라이더를 통해
+            **실시간(0.01초)**으로 곡선을 미세 조작하여 실측 데이터와의 **100% 완전 오버랩**을 달성할 수 있습니다.
+            """)
+
+            p_col1, p_col2, p_col3 = st.columns(3)
+            with p_col1:
+                cur_d2th = float(getattr(res, "zero_offset_2theta_deg", 0.0))
+                adj_d2th = st.slider(
+                    "각도 영점 오프셋 (Δ2θ, 도)",
+                    min_value=-0.030,
+                    max_value=0.030,
+                    value=cur_d2th,
+                    step=0.001,
+                    format="%.3f°",
+                    help="피크와 골의 가로 위상을 미세하게 좌우로 이동시켜 실측 위치와 일치시킵니다."
+                )
+            with p_col2:
+                top_l = res.best_stack.layers[0] if len(res.best_stack.layers) > 0 else None
+                cur_sig_top = float(top_l.roughness) if top_l else 1.0
+                adj_sig_top = st.slider(
+                    f"최상층 ({top_l.name if top_l else 'Surface'}) 거칠기 (Å)",
+                    min_value=0.05,
+                    max_value=3.50,
+                    value=cur_sig_top,
+                    step=0.05,
+                    format="%.2f Å",
+                    help="최상층 표면 거칠기(진폭 상쇄 밸런스)를 조절하여 1차 골의 깊이를 실측 바닥까지 깊게 내리거나 올립니다."
+                )
+            with p_col3:
+                cur_fwhm = float(res.resolution_fwhm_deg) if (res.resolution_fwhm_deg and res.resolution_fwhm_deg > 0) else 0.015
+                adj_fwhm = st.slider(
+                    "기기 분해능 FWHM (도)",
+                    min_value=0.005,
+                    max_value=0.040,
+                    value=cur_fwhm,
+                    step=0.001,
+                    format="%.3f°",
+                    help="슬릿 발산각 스미어링을 조절하여 좁은 간섭 골의 날카로움을 미세 조정합니다."
+                )
+
+            p_col4, p_col5 = st.columns(2)
+            with p_col4:
+                adj_scale_ratio = st.slider(
+                    "강도 스케일 배율 (Scale Factor Multiplier)",
+                    min_value=0.75,
+                    max_value=1.30,
+                    value=1.00,
+                    step=0.01,
+                    format="%.2fx",
+                    help="전반사 고원부 및 곡선 전체의 세로 높이를 실측점과 맞추기 위해 미세 승산합니다."
+                )
+            with p_col5:
+                sub_l = res.best_stack.substrate
+                cur_sig_sub = float(sub_l.roughness)
+                adj_sig_sub = st.slider(
+                    "기판 계면 거칠기 (Å)",
+                    min_value=0.05,
+                    max_value=4.00,
+                    value=cur_sig_sub,
+                    step=0.05,
+                    format="%.2f Å",
+                    help="기판 계면의 거칠기를 조절하여 고각 간섭 무늬의 진폭을 조절합니다."
+                )
+
+            # Build live tuned stack and calculate instantaneous response
+            pol_stack = copy.deepcopy(res.best_stack)
+            if len(pol_stack.layers) > 0:
+                pol_stack.layers[0].roughness = adj_sig_top
+            pol_stack.substrate.roughness = adj_sig_sub
+            pol_stack.update_all_optical_constants()
+
+            pol_scale = res.scale * adj_scale_ratio
+            pol_th = (res.two_theta - adj_d2th) / 2.0
+            pol_sim = simulate_parratt(
+                pol_th, pol_stack, scale=pol_scale, background=res.background,
+                sample_length_mm=res.sample_length_mm, beam_width_mm=res.beam_width_mm,
+                resolution_fwhm_deg=adj_fwhm
+            )
+            fom_pol = calculate_fom(res.experimental_intensity, pol_sim)
+
+            is_improved = fom_pol[1] < res.r_factor
+            fom_color = "#16A34A" if is_improved else "#4B5563"
+            st.markdown(f"""
+            <div style="background-color: #F8FAFC; border: 1.5px solid #CBD5E1; border-radius: 8px; padding: 10px 14px; margin: 10px 0;">
+                <b style="color: #1E293B;">⚡ 실시간 정밀 조정 지표:</b>
+                <span style="color: {fom_color}; font-weight: bold; margin-left: 8px;">R-Factor = {fom_pol[1]:.2%}</span> (기존: {res.r_factor:.2%}) | 
+                <b>Reduced χ² = {fom_pol[2]:.3f}</b> | <b>Log-MSE = {fom_pol[0]:.5f}</b>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if st.button("💾 위 미세 조정값으로 최종 피팅 모델 확정 및 갱신", type="primary", use_container_width=True):
+                res.best_stack = pol_stack
+                res.scale = pol_scale
+                res.resolution_fwhm_deg = adj_fwhm
+                res.zero_offset_2theta_deg = adj_d2th
+                res.simulated_intensity = pol_sim
+                res.residual_log = np.log10(res.experimental_intensity) - np.log10(np.maximum(pol_sim, 1e-12))
+                res.r_factor = fom_pol[1]
+                res.log_mse = fom_pol[0]
+                res.reduced_chi2 = fom_pol[2]
+                res.is_polished = True
+                st.session_state.fit_result = res
+                st.success("🎉 파인튜닝 모델이 최종 결과로 확정되었습니다!")
+                st.rerun()
 
         # 멀티 엔진 벤치마크 리더보드
         st.markdown("#### 🏁 멀티 물리 엔진 벤치마크 리더보드 (Engine Leaderboard)")

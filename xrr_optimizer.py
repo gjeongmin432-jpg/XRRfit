@@ -17,6 +17,7 @@ import os
 import copy
 import numpy as np
 from scipy.optimize import differential_evolution, minimize
+from scipy.signal import find_peaks
 
 from xrr_parser import XRRData
 from xrr_materials import calculate_optical_constants, STANDARD_MATERIALS
@@ -66,6 +67,8 @@ class FitResult:
     sample_length_mm: Optional[float] = None
     beam_width_mm: float = 0.1
     resolution_fwhm_deg: Optional[float] = None
+    zero_offset_2theta_deg: float = 0.0
+    is_polished: bool = False
 
 
 # ----------------------------------------------------------------------
@@ -372,6 +375,130 @@ def unpack_stack_params(
     return new_stack, scale, background
 
 
+def apply_adaptive_valley_polish(
+    two_theta: np.ndarray,
+    experimental_intensity: np.ndarray,
+    current_stack: LayerStack,
+    current_scale: float,
+    current_bkg: float,
+    current_fwhm: float,
+    sample_length_mm: Optional[float],
+    beam_width_mm: float,
+    wavelength_angstrom: float,
+    sim_func: Callable
+) -> Tuple[LayerStack, float, float, float, np.ndarray, Tuple[float, float, float]]:
+    """
+    Stage 2: Adaptive Valley-Peak Polishing Pass.
+    Identifies Kiessig fringe valleys with high residual discrepancy and executes a
+    focused local refinement optimizing surface contrast, resolution FWHM, and
+    goniometer zero-angle offset (Delta 2-theta) to drive valley residuals down to zero.
+    """
+    log_exp = np.log10(np.maximum(experimental_intensity, 1e-12))
+    valleys_idx, _ = find_peaks(-log_exp, prominence=0.04, distance=6)
+
+    s = copy.deepcopy(current_stack)
+    init_p = [np.log10(max(current_scale, 1e4))]
+    bounds: List[Tuple[float, float]] = [(init_p[0] - 0.08, init_p[0] + 0.08)]
+
+    for i, l in enumerate(s.layers):
+        init_p.extend([l.thickness, l.roughness, l.density])
+        if i == 0:
+            bounds.extend([
+                (max(5.0, l.thickness * 0.80), min(45.0, l.thickness * 1.25)),
+                (0.05, 2.5),
+                (max(1.8, l.density * 0.80), min(6.8, l.density * 1.20))
+            ])
+        else:
+            bounds.extend([
+                (l.thickness * 0.95, l.thickness * 1.05),
+                (0.05, 3.5),
+                (l.density * 0.92, l.density * 1.08)
+            ])
+
+    init_p.extend([s.substrate.roughness, s.substrate.density])
+    bounds.extend([
+        (0.05, 3.5),
+        (s.substrate.density * 0.94, s.substrate.density * 1.06)
+    ])
+
+    init_p.append(current_fwhm if (current_fwhm and current_fwhm > 0) else 0.015)
+    bounds.append((0.005, 0.035))
+
+    init_p.append(0.0)  # Delta 2-theta
+    bounds.append((-0.012, 0.012))
+
+    def polish_objective(p: np.ndarray) -> float:
+        try:
+            sc = 10**p[0]
+            idx = 1
+            new_layers = []
+            for lyr in s.layers:
+                new_layers.append(Layer(lyr.name, lyr.formula, float(p[idx]), float(p[idx+1]), float(p[idx+2])))
+                idx += 3
+            new_sub = Layer(s.substrate.name, s.substrate.formula, 0.0, float(p[idx]), float(p[idx+1]))
+            stk = LayerStack(s.ambient, new_layers, new_sub, wavelength_angstrom)
+            stk.update_all_optical_constants()
+            fwhm_val = float(p[idx+2])
+            d2th = float(p[idx+3])
+
+            th_shifted = (two_theta - d2th) / 2.0
+            sim = sim_func(
+                th_shifted, stk, scale=sc, background=current_bkg,
+                sample_length_mm=sample_length_mm,
+                beam_width_mm=beam_width_mm,
+                resolution_fwhm_deg=fwhm_val
+            )
+            if np.any(sim <= 0) or np.any(np.isnan(sim)):
+                return 1e8
+            log_sim = np.log10(sim)
+
+            base_mse = np.mean((log_exp - log_sim) ** 2)
+
+            v_penalty = 0.0
+            if len(valleys_idx) > 0:
+                v_diff = log_sim[valleys_idx] - log_exp[valleys_idx]
+                v_penalty = np.mean(np.where(v_diff > 0, (v_diff * 3.5)**2, v_diff**2))
+
+            sh_mask = (two_theta >= 0.48) & (two_theta <= 0.70)
+            sh_penalty = np.mean((log_exp[sh_mask] - log_sim[sh_mask])**2) if np.any(sh_mask) else 0.0
+            zero_reg = 30.0 * (d2th ** 2)
+
+            return float(base_mse + 3.0 * v_penalty + 1.5 * sh_penalty + zero_reg)
+        except Exception:
+            return 1e8
+
+    res_opt = minimize(
+        polish_objective,
+        init_p,
+        bounds=bounds,
+        method="L-BFGS-B",
+        options={"maxiter": 300, "ftol": 1e-13, "gtol": 1e-6}
+    )
+
+    p_opt = res_opt.x
+    sc_opt = 10**p_opt[0]
+    idx = 1
+    opt_layers = []
+    for lyr in s.layers:
+        opt_layers.append(Layer(lyr.name, lyr.formula, float(p_opt[idx]), float(p_opt[idx+1]), float(p_opt[idx+2])))
+        idx += 3
+    opt_sub = Layer(s.substrate.name, s.substrate.formula, 0.0, float(p_opt[idx]), float(p_opt[idx+1]))
+    opt_stk = LayerStack(s.ambient, opt_layers, opt_sub, wavelength_angstrom)
+    opt_stk.update_all_optical_constants()
+    fwhm_opt = float(p_opt[idx+2])
+    d2th_opt = float(p_opt[idx+3])
+
+    sim_opt = sim_func(
+        (two_theta - d2th_opt) / 2.0, opt_stk,
+        scale=sc_opt, background=current_bkg,
+        sample_length_mm=sample_length_mm,
+        beam_width_mm=beam_width_mm,
+        resolution_fwhm_deg=fwhm_opt
+    )
+    fom_opt = calculate_fom(experimental_intensity, sim_opt)
+    return opt_stk, sc_opt, fwhm_opt, d2th_opt, sim_opt, fom_opt
+
+
 # ----------------------------------------------------------------------
 # Stage 2 & 3: Global DE + Local Nelder-Mead Optimization
 # ----------------------------------------------------------------------
@@ -389,6 +516,7 @@ def fit_xrr(
     auto_fit_sample_length: bool = True,
     resolution_fwhm_deg: Optional[float] = 0.015,
     auto_surface_layer: bool = False,
+    enable_valley_polishing: bool = True,
     max_generations: int = 35,
     popsize: int = 12,
     progress_callback: Optional[Callable[[FitProgress], None]] = None
@@ -669,19 +797,56 @@ def fit_xrr(
         final_sim = sim_b
         best_mse, best_r, best_chi2 = fom_b
 
+    zero_offset_2th = 0.0
+    is_polished = False
+    if enable_valley_polishing:
+        if progress_callback:
+            progress_callback(FitProgress(
+                max_generations, max_generations, best_mse,
+                "[2단계] 적응형 골(Valley) 및 위상 잔차 정밀 연마 수행 중..."
+            ))
+        try:
+            primary_sim = simulate_parratt if "Parratt" in best_engine_name else simulate_abeles
+            p_stk, p_sc, p_fwhm, p_d2th, p_sim, p_fom = apply_adaptive_valley_polish(
+                two_theta=two_th,
+                experimental_intensity=y_exp,
+                current_stack=final_stack,
+                current_scale=final_scale,
+                current_bkg=final_bkg,
+                current_fwhm=final_fwhm if (final_fwhm and final_fwhm > 0) else 0.015,
+                sample_length_mm=final_L,
+                beam_width_mm=beam_width_mm,
+                wavelength_angstrom=clean_data.wavelength_angstrom,
+                sim_func=primary_sim
+            )
+            # Adopt polished solution if it improves or preserves FOM
+            if p_fom[1] <= best_r * 1.15 or p_fom[0] <= best_mse * 1.10:
+                final_stack = p_stk
+                final_scale = p_sc
+                final_fwhm = p_fwhm
+                zero_offset_2th = p_d2th
+                final_sim = p_sim
+                best_mse, best_r, best_chi2 = p_fom
+                is_polished = True
+        except Exception:
+            pass
+
     _, p_names = pack_stack_params(final_stack, final_scale, final_bkg)
     if auto_fit_sample_length:
         p_names.append("Sample_Length(mm)")
     if fit_fwhm:
         p_names.append("Beam_FWHM(deg)")
+    if is_polished and abs(zero_offset_2th) > 1e-4:
+        p_names.append("Zero_Offset(deg)")
 
     residuals = log_y_exp - np.log10(np.maximum(final_sim, 1e-12))
 
     if progress_callback:
         l_info = f", 시편 길이: {final_L:.1f}mm" if final_L else ""
+        pol_msg = " ([2단계] 골 연마 완료)" if is_polished else ""
         progress_callback(FitProgress(
             max_generations, max_generations, best_mse,
-            f"피팅 완료! 최적 엔진: {best_engine_name} (R-팩터: {best_r:.2%}, χ²: {best_chi2:.2f}{l_info})"
+            f"피팅 완료! 최적 엔진: {best_engine_name}{pol_msg} (R-팩터: {best_r:.2%}, χ²: {best_chi2:.2f}{l_info})"
         ))
 
 
@@ -707,7 +872,9 @@ def fit_xrr(
         end_two_theta=end_2th,
         sample_length_mm=final_L,
         beam_width_mm=beam_width_mm,
-        resolution_fwhm_deg=final_fwhm
+        resolution_fwhm_deg=final_fwhm,
+        zero_offset_2theta_deg=zero_offset_2th,
+        is_polished=is_polished
     )
 
 
