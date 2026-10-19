@@ -18,9 +18,47 @@ import matplotlib.pyplot as plt
 from scipy.special import erf
 import streamlit as st
 
-# Matplotlib 한글 폰트 설정 (Windows 기본 맑은 고딕 및 마이너스 기호 깨짐 방지)
-plt.rcParams['font.family'] = 'Malgun Gothic'
-plt.rcParams['axes.unicode_minus'] = False
+# Matplotlib 한글 폰트 설정 (Windows, Linux, Mac, Streamlit Cloud 완벽 호환)
+import matplotlib.font_manager as fm
+
+def setup_matplotlib_korean_font():
+    bundled_font = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".streamlit", "fonts", "NanumGothic.ttf")
+    if os.path.exists(bundled_font):
+        try:
+            fm.fontManager.addfont(bundled_font)
+            prop = fm.FontProperties(fname=bundled_font)
+            plt.rcParams['font.family'] = prop.get_name()
+            plt.rcParams['axes.unicode_minus'] = False
+            return
+        except Exception:
+            pass
+
+    linux_paths = [
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+        "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf",
+        "/usr/share/fonts/nanum/NanumGothic.ttf",
+    ]
+    for p in linux_paths:
+        if os.path.exists(p):
+            try:
+                fm.fontManager.addfont(p)
+                prop = fm.FontProperties(fname=p)
+                plt.rcParams['font.family'] = prop.get_name()
+                plt.rcParams['axes.unicode_minus'] = False
+                return
+            except Exception:
+                pass
+
+    available = {f.name for f in fm.fontManager.ttflist}
+    for font_name in ['NanumGothic', 'Malgun Gothic', 'Noto Sans CJK KR', 'AppleGothic', 'Gulim']:
+        if font_name in available:
+            plt.rcParams['font.family'] = font_name
+            plt.rcParams['axes.unicode_minus'] = False
+            return
+
+    plt.rcParams['axes.unicode_minus'] = False
+
+setup_matplotlib_korean_font()
 
 import importlib
 import xrr_parser
@@ -218,6 +256,14 @@ def calculate_depth_profile(stack: LayerStack, num_points: int = 500) -> Tuple[n
 
 with st.sidebar:
     st.markdown("### ⚙️ XRR 데이터 및 시스템 제어")
+
+    graph_lang = st.radio(
+        "🌐 그래프 라벨 언어 (Plot Language)",
+        ["한국어 (Korean)", "English (학술 논문용)"],
+        horizontal=True,
+        help="학술 논문 및 해외 저널 투고 시 'English'를 선택하면 그래프 제목, 축 라벨, 범례가 영문으로 표시됩니다."
+    )
+    is_eng = "English" in graph_lang
 
     # 1. 파일 입력
     st.markdown("#### 1. 원시 데이터 입력 (Data Input)")
@@ -612,19 +658,25 @@ with tab1:
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), sharex=True, gridspec_kw={"height_ratios": [2.5, 1]})
     
     # 상단: Log Intensity
-    ax1.plot(data.two_theta, data.intensity, color="#2563EB", lw=1.5, label="실측 XRR 반사율 (CPS)")
+    lbl_raw = "Measured XRR Reflectivity (CPS)" if is_eng else "실측 XRR 반사율 (CPS)"
+    lbl_span = f"Valid Fitting Range [{fit_start_2th:.2f}° ~ {fit_end_2th:.2f}°]" if is_eng else f"유효 피팅 구간 [{fit_start_2th:.2f}° ~ {fit_end_2th:.2f}°]"
+    lbl_crit = f"Critical Angle θ_c = {features.critical_angle_theta_deg:.3f}° (2θ={features.critical_angle_2theta_deg:.3f}°)" if is_eng else f"임계각 θ_c = {features.critical_angle_theta_deg:.3f}° (2θ={features.critical_angle_2theta_deg:.3f}°)"
+    lbl_y1 = "Reflectivity Intensity (Log10 CPS)" if is_eng else "반사율 강도 (Log10 CPS)"
+    lbl_title1 = "XRR Reflectivity Profile & Automated Feature Detection" if is_eng else "XRR 반사율 곡선 및 핵심 물리 특성 자동 검출"
+    lbl_dlog = "1st Derivative d(log₁₀ I)/d(2θ)" if is_eng else "1차 미분 d(log₁₀ I)/d(2θ)"
+    lbl_x = "2-Theta Angle (deg)" if is_eng else "2-Theta 각도 (도, deg)"
+    lbl_dy = "Derivative" if is_eng else "미분값"
+
+    ax1.plot(data.two_theta, data.intensity, color="#2563EB", lw=1.5, label=lbl_raw)
     ax1.set_yscale("log")
-    ax1.set_ylabel("반사율 강도 (Log10 CPS)", fontsize=11, fontweight="bold")
+    ax1.set_ylabel(lbl_y1, fontsize=11, fontweight="bold")
     ax1.grid(True, which="both", ls="--", alpha=0.4)
 
     # 피팅 권장 유효 구간 음영 표기
-    ax1.axvspan(fit_start_2th, fit_end_2th, color="#ECFDF5", alpha=0.6, label=f"유효 피팅 구간 [{fit_start_2th:.2f}° ~ {fit_end_2th:.2f}°]")
+    ax1.axvspan(fit_start_2th, fit_end_2th, color="#ECFDF5", alpha=0.6, label=lbl_span)
 
     # 임계각 표기
-    ax1.axvline(
-        features.critical_angle_2theta_deg, color="#DC2626", ls="--", lw=1.8,
-        label=f"임계각 θ_c = {features.critical_angle_theta_deg:.3f}° (2θ={features.critical_angle_2theta_deg:.3f}°)"
-    )
+    ax1.axvline(features.critical_angle_2theta_deg, color="#DC2626", ls="--", lw=1.8, label=lbl_crit)
 
     # Kiessig Fringe 피크 마커
     for f in features.fringes:
@@ -642,15 +694,15 @@ with tab1:
             )
 
     ax1.legend(loc="upper right", frameon=True)
-    ax1.set_title("XRR 반사율 곡선 및 핵심 물리 특성 자동 검출", fontsize=13, fontweight="bold")
+    ax1.set_title(lbl_title1, fontsize=13, fontweight="bold")
 
     # 하단: 1차 미분 d(log I)/d(2Theta)
     log_i_smooth = np.log10(data.intensity)
     d_log = np.gradient(log_i_smooth, data.two_theta)
-    ax2.plot(data.two_theta, d_log, color="#059669", lw=1.2, label="1차 미분 d(log₁₀ I)/d(2θ)")
+    ax2.plot(data.two_theta, d_log, color="#059669", lw=1.2, label=lbl_dlog)
     ax2.axvline(features.critical_angle_2theta_deg, color="#DC2626", ls="--", lw=1.5)
-    ax2.set_xlabel("2-Theta 각도 (도, deg)", fontsize=11, fontweight="bold")
-    ax2.set_ylabel("미분값", fontsize=11, fontweight="bold")
+    ax2.set_xlabel(lbl_x, fontsize=11, fontweight="bold")
+    ax2.set_ylabel(lbl_dy, fontsize=11, fontweight="bold")
     ax2.grid(True, ls="--", alpha=0.4)
     ax2.legend(loc="lower right")
 
@@ -660,14 +712,21 @@ with tab1:
 
     # q_z FFT 박막 두께 파워 스펙트럼 그래프
     if len(features.fft_thickness_grid) > 0:
-        st.markdown("#### 🔬 q_z 공간 고속 푸리에 변환 (FFT) 박막 두께 스펙트럼")
+        fft_hdr = "🔬 Spatial Frequency (q_z) FFT Thickness Power Spectrum" if is_eng else "🔬 q_z 공간 고속 푸리에 변환 (FFT) 박막 두께 스펙트럼"
+        st.markdown(f"#### {fft_hdr}")
         fig_fft, ax_fft = plt.subplots(figsize=(10, 3.8))
-        ax_fft.plot(features.fft_thickness_grid / 10.0, features.fft_power_spectrum, color="#7C3AED", lw=2.0, label="FFT 파워 스펙트럼")
-        ax_fft.axvline(features.fft_thickness_nm, color="#DC2626", ls="--", lw=1.8, label=f"지배 박막 두께 피크 = {features.fft_thickness_nm:.2f} nm ({features.fft_thickness_angstrom:.1f} Å)")
+        lbl_fft_pwr = "FFT Power Spectrum" if is_eng else "FFT 파워 스펙트럼"
+        lbl_fft_pk = f"Dominant Thickness Peak = {features.fft_thickness_nm:.2f} nm ({features.fft_thickness_angstrom:.1f} Å)" if is_eng else f"지배 박막 두께 피크 = {features.fft_thickness_nm:.2f} nm ({features.fft_thickness_angstrom:.1f} Å)"
+        lbl_fft_x = "Film Thickness d (nm)" if is_eng else "박막 두께 d (nm)"
+        lbl_fft_y = "Normalized Power (a.u.)" if is_eng else "정규화된 파워 (a.u.)"
+        lbl_fft_title = "Kiessig Fringe Spatial Frequency (q_z) Fourier Transform" if is_eng else "Kiessig Fringe 간섭 무늬의 공간 주파수(q_z) 푸리에 변환 및 고유 박막 두께 검출"
+
+        ax_fft.plot(features.fft_thickness_grid / 10.0, features.fft_power_spectrum, color="#7C3AED", lw=2.0, label=lbl_fft_pwr)
+        ax_fft.axvline(features.fft_thickness_nm, color="#DC2626", ls="--", lw=1.8, label=lbl_fft_pk)
         ax_fft.plot(features.fft_thickness_nm, 1.0, "r*", markersize=12)
-        ax_fft.set_xlabel("박막 두께 d (nm)", fontsize=11, fontweight="bold")
-        ax_fft.set_ylabel("정규화된 파워 (a.u.)", fontsize=11, fontweight="bold")
-        ax_fft.set_title("Kiessig Fringe 간섭 무늬의 공간 주파수(q_z) 푸리에 변환 및 고유 박막 두께 검출", fontsize=12, fontweight="bold")
+        ax_fft.set_xlabel(lbl_fft_x, fontsize=11, fontweight="bold")
+        ax_fft.set_ylabel(lbl_fft_y, fontsize=11, fontweight="bold")
+        ax_fft.set_title(lbl_fft_title, fontsize=12, fontweight="bold")
         ax_fft.set_xlim(2.0, min(80.0, max(features.fft_thickness_grid / 10.0)))
         ax_fft.grid(True, ls="--", alpha=0.4)
         ax_fft.legend(loc="upper right")
@@ -757,23 +816,31 @@ with tab2:
         # 메인 듀얼 플롯: 실측값 vs 피팅값 오버레이 + 하단 잔차 플롯 (논문용 세밀한 선/마커 스타일)
         fig_fit, (ax_top, ax_res) = plt.subplots(2, 1, figsize=(10, 7.2), sharex=True, gridspec_kw={"height_ratios": [2.8, 1]})
 
+        lbl_exp = f"Experimental XRR Data (Range: {res.start_two_theta:.2f}° ~ {res.end_two_theta:.2f}°)" if is_eng else f"실측 XRR 데이터 (피팅 구간: {res.start_two_theta:.2f}° ~ {res.end_two_theta:.2f}°)"
+        lbl_fit = f"Optimal Fitted Model ({res.best_engine})" if is_eng else f"최적 피팅 모델 ({res.best_engine})"
+        lbl_y_fit = "Reflectivity Intensity (Log10 CPS)" if is_eng else "반사율 강도 (Log10 CPS)"
+        lbl_title_fit = "Specular Reflectivity: Experimental Data vs. Best Multi-Physics Model" if is_eng else "경면 반사율: 실측 데이터 vs. 최적 멀티 물리 엔진 시뮬레이션 곡선"
+        lbl_span_5th = "1~5th Fringe Focus Region (Publication Analysis)" if is_eng else "1~5th Fringe 집중 정합 구간 (논문 분석 유효 영역)"
+        lbl_span_3rd = "Low-Angle Fringe Focus Region" if is_eng else "저각 Fringe 우선 정합 구간"
+        lbl_res_y = "Residual Δ log₁₀(I)" if is_eng else "잔차 Δ log₁₀(I)"
+        lbl_res_x = "2-Theta Angle (deg)" if is_eng else "2-Theta 각도 (도, deg)"
+
         # 상단: 오버레이 곡선 (마커 2.2pt, 모델 선폭 1.2pt로 세밀화)
-        ax_top.plot(res.two_theta, res.experimental_intensity, "o", color="#6B7280", markersize=2.2, alpha=0.55,
-                    label=f"실측 XRR 데이터 (피팅 구간: {res.start_two_theta:.2f}° ~ {res.end_two_theta:.2f}°)")
-        ax_top.plot(res.two_theta, res.simulated_intensity, color="#DC2626", lw=1.2, label=f"최적 피팅 모델 ({res.best_engine})")
+        ax_top.plot(res.two_theta, res.experimental_intensity, "o", color="#6B7280", markersize=2.2, alpha=0.55, label=lbl_exp)
+        ax_top.plot(res.two_theta, res.simulated_intensity, color="#DC2626", lw=1.2, label=lbl_fit)
         ax_top.set_yscale("log")
-        ax_top.set_ylabel("반사율 강도 (Log10 CPS)", fontsize=11, fontweight="bold")
-        ax_top.set_title("경면 반사율: 실측 데이터 vs. 최적 멀티 물리 엔진 시뮬레이션 곡선", fontsize=13, fontweight="bold")
+        ax_top.set_ylabel(lbl_y_fit, fontsize=11, fontweight="bold")
+        ax_top.set_title(lbl_title_fit, fontsize=13, fontweight="bold")
         ax_top.grid(True, which="both", ls="--", alpha=0.4)
 
         # 5th Kiessig fringe 집중 가중치/논문 구간 강조 표시
         if len(features.fringes) >= 5:
             th_5th_2th = features.fringes[4].two_theta
             span_end = min(th_5th_2th * 1.08, res.end_two_theta)
-            ax_top.axvspan(res.start_two_theta, span_end, color="#FEF3C7", alpha=0.30, label="1~5th Fringe 집중 정합 구간 (논문 분석 유효 영역)")
+            ax_top.axvspan(res.start_two_theta, span_end, color="#FEF3C7", alpha=0.30, label=lbl_span_5th)
         elif len(features.fringes) >= 3:
             th_3rd_2th = features.fringes[2].two_theta
-            ax_top.axvspan(res.start_two_theta, min(th_3rd_2th * 1.1, res.end_two_theta), color="#FEF3C7", alpha=0.30, label="저각 Fringe 우선 정합 구간")
+            ax_top.axvspan(res.start_two_theta, min(th_3rd_2th * 1.1, res.end_two_theta), color="#FEF3C7", alpha=0.30, label=lbl_span_3rd)
 
         ax_top.legend(loc="upper right", frameon=True, fontsize=9.5)
 
@@ -782,8 +849,8 @@ with tab2:
         ax_res.axhline(0.0, color="#111827", ls="-", lw=0.8)
         ax_res.axhline(0.1, color="#EF4444", ls=":", lw=0.8)
         ax_res.axhline(-0.1, color="#EF4444", ls=":", lw=0.8)
-        ax_res.set_xlabel("2-Theta 각도 (도, deg)", fontsize=11, fontweight="bold")
-        ax_res.set_ylabel("잔차 Δ log₁₀(I)", fontsize=11, fontweight="bold")
+        ax_res.set_xlabel(lbl_res_x, fontsize=11, fontweight="bold")
+        ax_res.set_ylabel(lbl_res_y, fontsize=11, fontweight="bold")
         ax_res.set_ylim(-0.25, 0.25)
         ax_res.grid(True, ls="--", alpha=0.4)
 
@@ -878,16 +945,23 @@ with tab3:
 
     fig_depth, (ax_rho, ax_sld) = plt.subplots(1, 2, figsize=(11, 4.5))
     
+    lbl_rho_x = "Depth from Surface z (nm)" if is_eng else "표면으로부터의 깊이 z (nm)"
+    lbl_rho_y = "Mass Density ρ (g/cm³)" if is_eng else "질량 밀도 ρ (g/cm³)"
+    lbl_rho_title = "Mass Density Depth Profile (ρ vs z)" if is_eng else "질량 밀도 깊이 프로파일 (Mass Density)"
+    lbl_sld_x = "Depth from Surface z (nm)" if is_eng else "표면으로부터의 깊이 z (nm)"
+    lbl_sld_y = "Real SLD (10⁻⁶ Å⁻²)" if is_eng else "SLD 실수부 (10⁻⁶ Å⁻²)"
+    lbl_sld_title = "Scattering Length Density (SLD) Profile" if is_eng else "산란 길이 밀도(SLD) 프로파일"
+
     ax_rho.plot(z_depth / 10.0, rho_depth, color="#1E40AF", lw=2.0)
-    ax_rho.set_xlabel("표면으로부터의 깊이 z (nm)", fontsize=11, fontweight="bold")
-    ax_rho.set_ylabel("질량 밀도 ρ (g/cm³)", fontsize=11, fontweight="bold")
-    ax_rho.set_title("질량 밀도 깊이 프로파일 (Mass Density)", fontsize=12, fontweight="bold")
+    ax_rho.set_xlabel(lbl_rho_x, fontsize=11, fontweight="bold")
+    ax_rho.set_ylabel(lbl_rho_y, fontsize=11, fontweight="bold")
+    ax_rho.set_title(lbl_rho_title, fontsize=12, fontweight="bold")
     ax_rho.grid(True, ls="--", alpha=0.4)
 
     ax_sld.plot(z_depth / 10.0, sld_depth, color="#B45309", lw=2.0)
-    ax_sld.set_xlabel("표면으로부터의 깊이 z (nm)", fontsize=11, fontweight="bold")
-    ax_sld.set_ylabel("SLD 실수부 (10⁻⁶ Å⁻²)", fontsize=11, fontweight="bold")
-    ax_sld.set_title("산란 길이 밀도(SLD) 프로파일", fontsize=12, fontweight="bold")
+    ax_sld.set_xlabel(lbl_sld_x, fontsize=11, fontweight="bold")
+    ax_sld.set_ylabel(lbl_sld_y, fontsize=11, fontweight="bold")
+    ax_sld.set_title(lbl_sld_title, fontsize=12, fontweight="bold")
     ax_sld.grid(True, ls="--", alpha=0.4)
 
     plt.tight_layout()
