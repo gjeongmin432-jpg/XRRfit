@@ -597,11 +597,42 @@ current_stack.update_all_optical_constants()
 if run_fitting_btn:
     progress_bar = st.progress(0.0)
     status_text = st.empty()
+    live_card_placeholder = st.empty()
+    live_plot_placeholder = st.empty()
 
     def update_ui_progress(prog: FitProgress):
         pct = min(1.0, max(0.0, prog.iteration / max(prog.max_iterations, 1)))
         progress_bar.progress(pct)
         status_text.markdown(f"**최적화 진행 중**: {prog.message}")
+
+        if prog.match_rate is not None and prog.r_factor is not None:
+            m_val = prog.match_rate
+            m_col = "#16A34A" if m_val >= 98.0 else ("#2563EB" if m_val >= 90.0 else "#D97706")
+            live_card_placeholder.markdown(
+                f"""
+                <div style="background-color: #F8FAFC; border: 1.5px solid #CBD5E1; border-radius: 8px; padding: 10px 18px; margin: 8px 0; display: flex; justify-content: space-between; align-items: center;">
+                    <div>⚡ <b>진행 단계</b>: <span style="color:#1E293B; font-weight:600;">{prog.message.split('(')[0].strip()}</span></div>
+                    <div>🎯 <b>실시간 일치율</b>: <b style="font-size:1.25rem; color:{m_col};">{m_val:.2f}%</b> <small style="color:#64748B;">(목표: 98.0%)</small></div>
+                    <div>📉 <b>R-Factor 오차율</b>: <b style="font-size:1.1rem; color:#334155;">{prog.r_factor:.2%}</b></div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+        if prog.current_sim is not None and prog.two_theta is not None and prog.exp_intensity is not None:
+            fig_live, ax_live = plt.subplots(figsize=(10, 3.8))
+            ax_live.plot(prog.two_theta, prog.exp_intensity, "o", color="#9CA3AF", markersize=2.2, alpha=0.55, label="실측 데이터 (Raw Data)")
+            lbl_sim = f"실시간 수렴 모델 (일치율: {prog.match_rate:.1f}%)" if prog.match_rate is not None else "실시간 수렴 모델"
+            ax_live.plot(prog.two_theta, prog.current_sim, color="#DC2626", lw=1.5, label=lbl_sim)
+            ax_live.set_yscale("log")
+            ax_live.set_xlabel(r"$2\theta$ 각도 (도, deg)", fontsize=10, fontweight="bold")
+            ax_live.set_ylabel(r"반사율 강도 ($\log_{10}$ CPS)", fontsize=10, fontweight="bold")
+            ax_live.set_title(f"🔄 실시간 피팅 수렴 모니터 — {prog.message}", fontsize=11, fontweight="bold")
+            ax_live.grid(True, which="both", ls="--", alpha=0.35)
+            ax_live.legend(loc="upper right", fontsize=9.5)
+            fig_live.tight_layout()
+            live_plot_placeholder.pyplot(fig_live)
+            plt.close(fig_live)
 
     try:
         engine_mode = "Auto" if "자동" in engine_sel else ("Parratt" if "Parratt" in engine_sel else "Abeles")

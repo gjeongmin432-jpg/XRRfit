@@ -45,6 +45,11 @@ class FitProgress:
     max_iterations: int
     best_loss: float
     message: str = ""
+    current_sim: Optional[np.ndarray] = None
+    two_theta: Optional[np.ndarray] = None
+    exp_intensity: Optional[np.ndarray] = None
+    match_rate: Optional[float] = None
+    r_factor: Optional[float] = None
 
 
 @dataclass
@@ -474,7 +479,7 @@ def apply_iterative_fringe_refinement(
     sim_func: Callable,
     target_match_rate: float = 98.0,
     max_refinement_iters: int = 8,
-    progress_callback: Optional[Callable[[int, float, str], None]] = None
+    progress_callback: Optional[Callable[[int, float, str, Optional[np.ndarray]], None]] = None
 ) -> Tuple[
     LayerStack, float, float, float, float, np.ndarray,
     Tuple[float, float, float], float, float, int,
@@ -579,7 +584,8 @@ def apply_iterative_fringe_refinement(
         if progress_callback:
             progress_callback(
                 it, cur_match,
-                f"[Fringe 부분 피팅 {it}/{max_refinement_iters}회] 현재 일치율: {cur_match:.2f}% (최저 구간: {min_zm:.1f}% -> 목표: {target_match_rate:.1f}%)"
+                f"[Fringe 부분 피팅 {it}/{max_refinement_iters}회] 현재 일치율: {cur_match:.2f}% (최저 구간: {min_zm:.1f}% -> 목표: {target_match_rate:.1f}%)",
+                cur_sim
             )
 
         if cur_match >= target_match_rate and min_zm >= target_match_rate - 0.5 and it > 1:
@@ -788,6 +794,13 @@ def apply_iterative_fringe_refinement(
             "main_rho": round(cur_stack.layers[-1].density if cur_stack.layers else cur_stack.substrate.density, 3),
             "main_sigma": round(cur_stack.layers[-1].roughness if cur_stack.layers else cur_stack.substrate.roughness, 2)
         })
+
+        if progress_callback:
+            progress_callback(
+                it, cur_match,
+                f"[Fringe 부분 피팅 {it}회 완료] 일치율: {cur_match:.2f}% (R: {fom_it[1]:.2%})",
+                cur_sim
+            )
 
         if cur_match >= target_match_rate and (not z_matches_after or min(z_matches_after) >= target_match_rate - 0.5):
             break
@@ -1022,20 +1035,45 @@ def fit_xrr(
 
     # 3. Global Optimization via Differential Evolution
     curr_gen = [0]
+    total_stages = max_generations + (max_refinement_iters if enable_valley_polishing else 0)
 
     def de_callback(xk: np.ndarray, convergence: float):
         curr_gen[0] += 1
         if progress_callback:
             loss_val = objective(xk)
+            sim_k = None
+            match_k = None
+            r_k = None
+            if curr_gen[0] == 1 or curr_gen[0] % 2 == 0 or curr_gen[0] == max_generations:
+                try:
+                    p_idx_k = len(xk)
+                    curr_fwhm_k = float(xk[p_idx_k - 1]) if fit_fwhm else resolution_fwhm_deg
+                    if fit_fwhm: p_idx_k -= 1
+                    L_sample_k = float(xk[p_idx_k - 1]) if auto_fit_sample_length else sample_length_mm
+                    if auto_fit_sample_length: p_idx_k -= 1
+                    stk_k, sc_k, bg_k = unpack_stack_params(xk[:p_idx_k], active_stack)
+                    sim_k = sim_func(th, stk_k, scale=sc_k, background=bg_k, sample_length_mm=L_sample_k, beam_width_mm=beam_width_mm, resolution_fwhm_deg=curr_fwhm_k)
+                    match_k = calculate_match_rate(y_exp, sim_k)
+                    fom_k = calculate_fom(y_exp, sim_k)
+                    r_k = fom_k[1]
+                except Exception:
+                    pass
+
+            msg_info = f" (일치율: {match_k:.1f}%, R: {r_k:.2%})" if match_k is not None else f" (오차: {loss_val:.4f})"
             progress_callback(FitProgress(
                 iteration=curr_gen[0],
-                max_iterations=max_generations,
+                max_iterations=total_stages,
                 best_loss=loss_val,
-                message=f"전역 DE 탐색 세대 {curr_gen[0]}/{max_generations} (오차: {loss_val:.4f})"
+                message=f"전역 DE 탐색 {curr_gen[0]}/{max_generations}세대{msg_info}",
+                current_sim=sim_k,
+                two_theta=two_th,
+                exp_intensity=y_exp,
+                match_rate=match_k,
+                r_factor=r_k
             ))
 
     if progress_callback:
-        progress_callback(FitProgress(0, max_generations, 0.0, "전역 차분 진화(DE) 풋프린트/스택 최적화 시작 중..."))
+        progress_callback(FitProgress(0, total_stages, 0.0, "전역 차분 진화(DE) 풋프린트/스택 최적화 시작 중..."))
 
     de_res = differential_evolution(
         objective,
@@ -1055,7 +1093,7 @@ def fit_xrr(
     # 4. Local Refinement (Nelder-Mead)
     if progress_callback:
         progress_callback(FitProgress(
-            max_generations, max_generations, float(de_res.fun),
+            max_generations, total_stages, float(de_res.fun),
             "Nelder-Mead 국소 심플렉스 정밀화 수행 중..."
         ))
 
@@ -1069,12 +1107,6 @@ def fit_xrr(
         best_p = local_res.x
 
     # 4b. L-BFGS-B 2차 Gradient 정밀화
-    if progress_callback:
-        progress_callback(FitProgress(
-            max_generations, max_generations, float(objective(best_p)),
-            "L-BFGS-B 그래디언트 기반 2차 정밀화 수행 중..."
-        ))
-
     try:
         lbfgs_res = minimize(
             objective,
@@ -1145,15 +1177,31 @@ def fit_xrr(
     if enable_valley_polishing:
         if progress_callback:
             progress_callback(FitProgress(
-                max_generations, max_generations, best_mse,
-                f"[2단계] Fringe 구간별 가중치 부분 피팅 및 파라미터 역투영 시작 (1차 일치율: {init_match:.2f}% -> 목표: {target_match_rate:.1f}%)"
+                max_generations, total_stages, best_mse,
+                f"[2단계] Fringe 구간별 부분 피팅 & 파라미터 역투영 시작 (1차 일치율: {init_match:.2f}% -> 목표: {target_match_rate:.1f}%)",
+                current_sim=final_sim,
+                two_theta=two_th,
+                exp_intensity=y_exp,
+                match_rate=init_match,
+                r_factor=best_r
             ))
         try:
             primary_sim = simulate_parratt if "Parratt" in best_engine_name else simulate_abeles
 
-            def _iter_cb(it_num: int, m_rate: float, msg: str):
+            def _iter_cb(it_num: int, m_rate: float, msg: str, sim_curve: Optional[np.ndarray] = None):
                 if progress_callback:
-                    progress_callback(FitProgress(max_generations, max_generations, best_mse, msg))
+                    fom_it = calculate_fom(y_exp, sim_curve) if sim_curve is not None else (best_mse, best_r, best_chi2)
+                    progress_callback(FitProgress(
+                        iteration=max_generations + it_num,
+                        max_iterations=total_stages,
+                        best_loss=fom_it[0],
+                        message=msg,
+                        current_sim=sim_curve,
+                        two_theta=two_th,
+                        exp_intensity=y_exp,
+                        match_rate=m_rate,
+                        r_factor=fom_it[1]
+                    ))
 
             (
                 p_stk, p_sc, p_bkg, p_fwhm, p_d2th, p_sim,
