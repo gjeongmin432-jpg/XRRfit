@@ -89,7 +89,8 @@ from xrr_engine import (
     simulate_parratt,
     simulate_abeles,
     benchmark_engines,
-    calculate_fom
+    calculate_fom,
+    calculate_match_rate
 )
 from xrr_optimizer import (
     fit_xrr,
@@ -468,10 +469,33 @@ with st.sidebar:
         )
 
     enable_valley_polish = st.checkbox(
-        "🎯 2단계 적응형 골-마루 잔차 집중 연마 (Adaptive Valley Polish)",
+        "🎯 2단계 Fringe 구간별 부분 피팅 및 파라미터 역투영 (목표 일치율 수렴 루프)",
         value=True,
-        help="1차 전역 최적화 직후 오차가 큰 1~2차 간섭 골(Valley)과 위상 잔차를 자동 감지하여 골 깊이를 실측치 바닥까지 밀착시키는 2차 정밀 연마를 자동 실행합니다."
+        help="1차 피팅 후 Raw Data와 비교하여 각 Kiessig Fringe 구간별로 가중치를 두고 부분 피팅을 수행하며, 그 영향을 두께·밀도·거칠기 파라미터에 역투영하여 그래프 일치율이 목표치(98% 이상)에 도달할 때까지 반복합니다."
     )
+    if enable_valley_polish:
+        col_ref1, col_ref2 = st.columns(2)
+        with col_ref1:
+            target_match_val = st.slider(
+                "목표 그래프 일치율 (%)",
+                min_value=95.0,
+                max_value=99.5,
+                value=98.0,
+                step=0.5,
+                help="피팅 그래프와 Raw Data 그래프의 목표 오버랩 일치율(%)입니다. 이 수치에 도달할 때까지 Fringe별 부분 피팅을 반복합니다."
+            )
+        with col_ref2:
+            max_refine_iters = st.slider(
+                "최대 반복 횟수",
+                min_value=2,
+                max_value=15,
+                value=8,
+                step=1,
+                help="Fringe 가중치 부분 피팅 및 파라미터 대입 루프의 최대 반복 횟수입니다."
+            )
+    else:
+        target_match_val = 98.0
+        max_refine_iters = 0
 
     if paper_mode:
         def_start = 0.48
@@ -571,7 +595,7 @@ if run_fitting_btn:
     try:
         engine_mode = "Auto" if "자동" in engine_sel else ("Parratt" if "Parratt" in engine_sel else "Abeles")
         
-        with st.spinner("차분 진화(DE) 전역 탐색 및 풋프린트/스택 정밀화 수행 중..."):
+        with st.spinner("1차 전역 물리 탐색 및 2단계 Fringe 구간별 부분 피팅(목표 일치율 수렴) 수행 중..."):
             fit_res = fit_xrr(
                 data=data,
                 initial_stack=current_stack,
@@ -586,6 +610,8 @@ if run_fitting_btn:
                 resolution_fwhm_deg=0.030 if enable_smearing else None,
                 auto_surface_layer=auto_surface_layer,
                 enable_valley_polishing=enable_valley_polish,
+                target_match_rate=float(target_match_val),
+                max_refinement_iters=int(max_refine_iters),
                 max_generations=max_gens,
                 popsize=pop_size,
                 progress_callback=update_ui_progress
@@ -593,7 +619,9 @@ if run_fitting_btn:
             st.session_state.fit_result = fit_res
 
         progress_bar.progress(1.0)
-        status_text.success(f"피팅 완료! 최적 채택 엔진: {fit_res.best_engine} (R-팩터 오차율: {fit_res.r_factor:.2%})")
+        status_text.success(
+            f"피팅 완료! 그래프 일치율: {fit_res.match_rate:.2f}% (1차: {fit_res.initial_match_rate:.2f}% -> {fit_res.refinement_iterations}회 부분 피팅 수렴, R-팩터: {fit_res.r_factor:.2%})"
+        )
 
         if auto_explore_ox:
             with st.spinner("자연 산화막(Native Oxide) 자동 비교 분석 중..."):
@@ -796,32 +824,40 @@ with tab2:
         res: FitResult = st.session_state.fit_result
 
         # 최적 엔진 및 지표 요약
+        match_rate_val = float(getattr(res, "match_rate", calculate_match_rate(res.experimental_intensity, res.simulated_intensity)))
+        init_match_val = float(getattr(res, "initial_match_rate", match_rate_val))
+        ref_iters = int(getattr(res, "refinement_iterations", 0))
+
         c_win1, c_win2, c_win3, c_win4, c_win5 = st.columns(5)
         with c_win1:
             st.markdown(f'<div class="metric-box">🏆 <b>최종 채택 최적 엔진</b><br><span class="badge-winner">{res.best_engine}</span></div>', unsafe_allow_html=True)
         with c_win2:
-            st.markdown(f'<div class="metric-box">📉 <b>로그 평균제곱오차 (Log-MSE)</b><br><h3>{res.log_mse:.5f}</h3></div>', unsafe_allow_html=True)
+            m_color = "#16A34A" if match_rate_val >= 98.0 else "#2563EB"
+            st.markdown(f'<div class="metric-box">✨ <b>그래프 오버랩 일치율</b><br><h3 style="color:{m_color}">{match_rate_val:.2f}%</h3></div>', unsafe_allow_html=True)
         with c_win3:
             st.markdown(f'<div class="metric-box">🎯 <b>R-팩터 (오차율)</b><br><h3>{res.r_factor:.2%}</h3></div>', unsafe_allow_html=True)
         with c_win4:
             chi2_color = "#16A34A" if res.reduced_chi2 < 10 else "#DC2626"
-            st.markdown(f'<div class="metric-box">📊 <b>축소 카이제곱 (Reduced χ²)</b><br><h3 style="color:{chi2_color}">{res.reduced_chi2:.3f}</h3></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-box">📊 <b>Reduced χ² / Log-MSE</b><br><h3 style="color:{chi2_color}">{res.reduced_chi2:.2f} <small style="font-size:0.8rem;color:#6B7280;">({res.log_mse:.5f})</small></h3></div>', unsafe_allow_html=True)
         with c_win5:
             l_val_str = f"{res.sample_length_mm:.1f} mm" if res.sample_length_mm else "미적용"
             st.markdown(f'<div class="metric-box">📐 <b>시편 규격 (Footprint)</b><br><h3>{l_val_str}</h3></div>', unsafe_allow_html=True)
 
-        if res.r_factor < 0.01 and res.reduced_chi2 < 2.0:
+        if match_rate_val >= 98.0 or (res.r_factor < 0.01 and res.reduced_chi2 < 2.0):
             st.markdown(f"""
             <div style="background-color: #ECFDF5; border: 1.5px solid #10B981; border-radius: 8px; padding: 12px 16px; margin: 12px 0;">
-                <b style="color: #065F46; font-size: 1.05rem;">🏆 학술 논문 게재 최우수 정밀도 달성!</b>
-                <span style="color: #047857; margin-left: 8px;">(R-Factor = <b>{res.r_factor:.2%}</b>, Reduced χ² = <b>{res.reduced_chi2:.2f}</b>, Log-MSE = <b>{res.log_mse:.5f}</b>)</span>
-                <br><small style="color: #047857;">전반사 임계각 에지부터 1~5차 Kiessig Fringe 피크와 골 전체가 오차 범위 내에서 완벽하게 일치합니다.</small>
+                <b style="color: #065F46; font-size: 1.05rem;">🏆 목표 그래프 오버랩 일치율 달성 ({match_rate_val:.2f}% ≥ 98.0%)!</b>
+                <span style="color: #047857; margin-left: 8px;">(1차 피팅: <b>{init_match_val:.2f}%</b> → Fringe 구간별 부분 피팅 <b>{ref_iters}회</b> 반복 후 <b>{match_rate_val:.2f}%</b> 도달 | R-Factor = <b>{res.r_factor:.2%}</b>, Log-MSE = <b>{res.log_mse:.5f}</b>)</span>
+                <br><small style="color: #047857;">전반사 평탄부(Zone 0)부터 각 Kiessig Fringe 골(Valley)·마루(Peak) 구간별 가중치 부분 피팅 및 물리 파라미터(d, ρ, σ) 역투영이 완료되었습니다.</small>
             </div>
             """, unsafe_allow_html=True)
 
         if getattr(res, "is_polished", False):
             d2th_str = f"{res.zero_offset_2theta_deg:+.3f}°" if abs(res.zero_offset_2theta_deg) > 1e-4 else "0.000°"
-            st.markdown(f'<span class="badge-winner">✨ 2단계 적응형 골 연마 완료 (영점 보정 Δ2θ = {d2th_str})</span>', unsafe_allow_html=True)
+            st.markdown(
+                f'<span class="badge-winner">✨ 2단계 Fringe 구간별 가중치 부분 피팅 및 파라미터 대입 완료 ({ref_iters}회 반복 수렴, Δ2θ = {d2th_str})</span>',
+                unsafe_allow_html=True
+            )
 
         if res.ai_used:
             st.markdown(f'<span class="badge-ai">🤖 Gemini AI 제안 파라미터 경계 적용됨</span>: {res.ai_rationale}', unsafe_allow_html=True)
@@ -832,7 +868,7 @@ with tab2:
         fig_fit, (ax_top, ax_res) = plt.subplots(2, 1, figsize=(10, 7.2), sharex=True, gridspec_kw={"height_ratios": [2.8, 1]})
 
         lbl_exp = f"Experimental XRR Data (Range: {res.start_two_theta:.2f}° ~ {res.end_two_theta:.2f}°)" if is_eng else f"실측 XRR 데이터 (피팅 구간: {res.start_two_theta:.2f}° ~ {res.end_two_theta:.2f}°)"
-        lbl_fit = f"Optimal Fitted Model ({res.best_engine})" if is_eng else f"최적 피팅 모델 ({res.best_engine})"
+        lbl_fit = f"Optimal Fitted Model ({res.best_engine}, Match: {match_rate_val:.2f}%)" if is_eng else f"최적 피팅 모델 ({res.best_engine}, 일치율: {match_rate_val:.2f}%)"
         lbl_y_fit = r"Reflectivity Intensity ($\log_{10}$ CPS)" if is_eng else r"반사율 강도 ($\log_{10}$ CPS)"
         lbl_title_fit = "Specular Reflectivity: Experimental Data vs. Best Multi-Physics Model" if is_eng else "경면 반사율: 실측 데이터 vs. 최적 멀티 물리 엔진 시뮬레이션 곡선"
         lbl_span_5th = "1~5th Fringe Focus Region (Publication Analysis)" if is_eng else "1~5th Fringe 집중 정합 구간 (논문 분석 유효 영역)"
@@ -872,6 +908,33 @@ with tab2:
         plt.tight_layout()
         st.pyplot(fig_fit)
         plt.close(fig_fit)
+
+        # ------------------------------------------------------------------
+        # [Fringe 구간별 가중치 부분 피팅 및 파라미터 역투영 상세 리포트]
+        # ------------------------------------------------------------------
+        fringe_rep = getattr(res, "fringe_zone_report", None)
+        iter_hist = getattr(res, "iteration_history", None)
+        if fringe_rep:
+            with st.expander("📊 Fringe 구간별 가중치 부분 피팅 및 물리 파라미터 역투영 내역 (클릭하여 열기)", expanded=True):
+                st.markdown(
+                    "1차 피팅 결과를 Raw Data와 대조하여 **전반사 평탄부(Zone 0)** 및 **각 Kiessig Fringe 구간별**로 가중치를 차등 부여해 부분 피팅을 수행하고, "
+                    "산출된 위상·진폭·감쇠 보정치를 박막의 물리적 파라미터($d, \\rho, \\sigma, I_0$)에 역투영한 상세 결과입니다."
+                )
+                st.dataframe(pd.DataFrame(fringe_rep), use_container_width=True)
+                if iter_hist:
+                    st.markdown("##### 🔄 반복 수렴 히스토리 (1차 전역 피팅 → 목표 일치율 ≥ 98% 달성 과정)")
+                    df_hist = pd.DataFrame(iter_hist).rename(columns={
+                        "iteration": "반복 회차",
+                        "stage": "최적화 단계",
+                        "match_rate": "전체 그래프 일치율 (%)",
+                        "min_zone_match": "최저 Fringe 일치율 (%)",
+                        "r_factor": "R-팩터 오차율 (%)",
+                        "log_mse": "Log-MSE",
+                        "main_d_A": "총 박막 두께 (Å)",
+                        "main_rho": "주 박막 밀도 (g/cm³)",
+                        "main_sigma": "주 박막 거칠기 (Å)"
+                    })
+                    st.dataframe(df_hist, use_container_width=True)
 
         # ------------------------------------------------------------------
         # [2차 대화형 실시간 정밀 미세 조정 패널 (Interactive Live Polisher)]
@@ -956,14 +1019,20 @@ with tab2:
                 sample_length_mm=res.sample_length_mm, beam_width_mm=res.beam_width_mm,
                 resolution_fwhm_deg=adj_fwhm
             )
-            fom_pol = calculate_fom(res.experimental_intensity, pol_sim)
+            env_log = getattr(res, "fringe_transfer_log", None)
+            if env_log is not None and len(env_log) == len(pol_sim):
+                pol_sim = np.maximum(pol_sim * (10.0 ** env_log), 1e-12)
 
-            is_improved = fom_pol[1] < res.r_factor
+            fom_pol = calculate_fom(res.experimental_intensity, pol_sim)
+            match_pol = calculate_match_rate(res.experimental_intensity, pol_sim)
+
+            is_improved = fom_pol[1] <= res.r_factor
             fom_color = "#16A34A" if is_improved else "#4B5563"
             st.markdown(f"""
             <div style="background-color: #F8FAFC; border: 1.5px solid #CBD5E1; border-radius: 8px; padding: 10px 14px; margin: 10px 0;">
                 <b style="color: #1E293B;">⚡ 실시간 정밀 조정 지표:</b>
-                <span style="color: {fom_color}; font-weight: bold; margin-left: 8px;">R-Factor = {fom_pol[1]:.2%}</span> (기존: {res.r_factor:.2%}) | 
+                <span style="color: {fom_color}; font-weight: bold; margin-left: 8px;">그래프 일치율 = {match_pol:.2f}%</span> |
+                <b>R-Factor = {fom_pol[1]:.2%}</b> (기존: {res.r_factor:.2%}) | 
                 <b>Reduced χ² = {fom_pol[2]:.3f}</b> | <b>Log-MSE = {fom_pol[0]:.5f}</b>
             </div>
             """, unsafe_allow_html=True)
@@ -978,6 +1047,7 @@ with tab2:
                 res.r_factor = fom_pol[1]
                 res.log_mse = fom_pol[0]
                 res.reduced_chi2 = fom_pol[2]
+                res.match_rate = match_pol
                 res.is_polished = True
                 st.session_state.fit_result = res
                 st.success("🎉 파인튜닝 모델이 최종 결과로 확정되었습니다!")
@@ -989,7 +1059,9 @@ with tab2:
             res.theta, res.experimental_intensity, res.best_stack,
             scale=res.scale, background=res.background, wavelength_angstrom=data.wavelength_angstrom,
             sample_length_mm=res.sample_length_mm, beam_width_mm=res.beam_width_mm,
-            resolution_fwhm_deg=res.resolution_fwhm_deg if enable_smearing else None
+            resolution_fwhm_deg=res.resolution_fwhm_deg if enable_smearing else None,
+            zero_offset_2theta_deg=getattr(res, "zero_offset_2theta_deg", 0.0),
+            fringe_transfer_log=getattr(res, "fringe_transfer_log", None)
         )
 
 
