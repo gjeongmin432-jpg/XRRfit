@@ -468,7 +468,7 @@ with st.sidebar:
         )
 
     if paper_mode:
-        def_start = 0.48 if (feat_rep and feat_rep.critical_angle_2theta_deg >= 0.45) else 0.45
+        def_start = 0.48
         if f5_cutoff is not None:
             def_end = f5_cutoff
         else:
@@ -660,11 +660,15 @@ with tab1:
     # 상단: Log Intensity
     lbl_raw = "Measured XRR Reflectivity (CPS)" if is_eng else "실측 XRR 반사율 (CPS)"
     lbl_span = f"Valid Fitting Range [{fit_start_2th:.2f}° ~ {fit_end_2th:.2f}°]" if is_eng else f"유효 피팅 구간 [{fit_start_2th:.2f}° ~ {fit_end_2th:.2f}°]"
-    lbl_crit = f"Critical Angle θ_c = {features.critical_angle_theta_deg:.3f}° (2θ={features.critical_angle_2theta_deg:.3f}°)" if is_eng else f"임계각 θ_c = {features.critical_angle_theta_deg:.3f}° (2θ={features.critical_angle_2theta_deg:.3f}°)"
-    lbl_y1 = "Reflectivity Intensity (Log10 CPS)" if is_eng else "반사율 강도 (Log10 CPS)"
+    lbl_crit = (
+        rf"Critical Angle $\theta_c$ = {features.critical_angle_theta_deg:.3f}° ($2\theta$={features.critical_angle_2theta_deg:.3f}°)"
+        if is_eng else
+        rf"임계각 $\theta_c$ = {features.critical_angle_theta_deg:.3f}° ($2\theta$={features.critical_angle_2theta_deg:.3f}°)"
+    )
+    lbl_y1 = r"Reflectivity Intensity ($\log_{10}$ CPS)" if is_eng else r"반사율 강도 ($\log_{10}$ CPS)"
     lbl_title1 = "XRR Reflectivity Profile & Automated Feature Detection" if is_eng else "XRR 반사율 곡선 및 핵심 물리 특성 자동 검출"
-    lbl_dlog = "1st Derivative d(log₁₀ I)/d(2θ)" if is_eng else "1차 미분 d(log₁₀ I)/d(2θ)"
-    lbl_x = "2-Theta Angle (deg)" if is_eng else "2-Theta 각도 (도, deg)"
+    lbl_dlog = r"1st Derivative $\mathrm{d}(\log_{10} I)/\mathrm{d}(2\theta)$" if is_eng else r"1차 미분 $\mathrm{d}(\log_{10} I)/\mathrm{d}(2\theta)$"
+    lbl_x = r"$2\theta$ Angle (deg)" if is_eng else r"$2\theta$ 각도 (도, deg)"
     lbl_dy = "Derivative" if is_eng else "미분값"
 
     ax1.plot(data.two_theta, data.intensity, color="#2563EB", lw=1.5, label=lbl_raw)
@@ -775,7 +779,7 @@ with tab2:
         ax_prev.plot(two_th_prev, sim_init_a, color="#2563EB", lw=1.8, label=f"엔진 A (Parratt, 초기 오차={fom_a[1]:.1%})")
         ax_prev.plot(two_th_prev, sim_init_b, color="#D97706", lw=1.8, ls="--", label=f"엔진 B (Abeles, 초기 오차={fom_b[1]:.1%})")
         ax_prev.set_yscale("log")
-        ax_prev.set_xlabel("2-Theta 각도 (도, deg)")
+        ax_prev.set_xlabel(r"$2\theta$ 각도 (도, deg)")
         ax_prev.set_ylabel("반사율 강도 (CPS)")
         ax_prev.legend()
         ax_prev.grid(True, ls="--", alpha=0.4)
@@ -818,12 +822,12 @@ with tab2:
 
         lbl_exp = f"Experimental XRR Data (Range: {res.start_two_theta:.2f}° ~ {res.end_two_theta:.2f}°)" if is_eng else f"실측 XRR 데이터 (피팅 구간: {res.start_two_theta:.2f}° ~ {res.end_two_theta:.2f}°)"
         lbl_fit = f"Optimal Fitted Model ({res.best_engine})" if is_eng else f"최적 피팅 모델 ({res.best_engine})"
-        lbl_y_fit = "Reflectivity Intensity (Log10 CPS)" if is_eng else "반사율 강도 (Log10 CPS)"
+        lbl_y_fit = r"Reflectivity Intensity ($\log_{10}$ CPS)" if is_eng else r"반사율 강도 ($\log_{10}$ CPS)"
         lbl_title_fit = "Specular Reflectivity: Experimental Data vs. Best Multi-Physics Model" if is_eng else "경면 반사율: 실측 데이터 vs. 최적 멀티 물리 엔진 시뮬레이션 곡선"
         lbl_span_5th = "1~5th Fringe Focus Region (Publication Analysis)" if is_eng else "1~5th Fringe 집중 정합 구간 (논문 분석 유효 영역)"
         lbl_span_3rd = "Low-Angle Fringe Focus Region" if is_eng else "저각 Fringe 우선 정합 구간"
-        lbl_res_y = "Residual Δ log₁₀(I)" if is_eng else "잔차 Δ log₁₀(I)"
-        lbl_res_x = "2-Theta Angle (deg)" if is_eng else "2-Theta 각도 (도, deg)"
+        lbl_res_y = r"Residual $\Delta\log_{10}(I)$" if is_eng else r"잔차 $\Delta\log_{10}(I)$"
+        lbl_res_x = r"$2\theta$ Angle (deg)" if is_eng else r"$2\theta$ 각도 (도, deg)"
 
         # 상단: 오버레이 곡선 (마커 2.2pt, 모델 선폭 1.2pt로 세밀화)
         ax_top.plot(res.two_theta, res.experimental_intensity, "o", color="#6B7280", markersize=2.2, alpha=0.55, label=lbl_exp)
@@ -946,10 +950,10 @@ with tab3:
     fig_depth, (ax_rho, ax_sld) = plt.subplots(1, 2, figsize=(11, 4.5))
     
     lbl_rho_x = "Depth from Surface z (nm)" if is_eng else "표면으로부터의 깊이 z (nm)"
-    lbl_rho_y = "Mass Density ρ (g/cm³)" if is_eng else "질량 밀도 ρ (g/cm³)"
-    lbl_rho_title = "Mass Density Depth Profile (ρ vs z)" if is_eng else "질량 밀도 깊이 프로파일 (Mass Density)"
+    lbl_rho_y = r"Mass Density $\rho$ ($\mathrm{g/cm}^3$)" if is_eng else r"질량 밀도 $\rho$ ($\mathrm{g/cm}^3$)"
+    lbl_rho_title = r"Mass Density Depth Profile ($\rho$ vs $z$)" if is_eng else r"질량 밀도 깊이 프로파일 ($\rho$ vs $z$)"
     lbl_sld_x = "Depth from Surface z (nm)" if is_eng else "표면으로부터의 깊이 z (nm)"
-    lbl_sld_y = "Real SLD (10⁻⁶ Å⁻²)" if is_eng else "SLD 실수부 (10⁻⁶ Å⁻²)"
+    lbl_sld_y = r"Real SLD ($10^{-6}\ \mathrm{\AA}^{-2}$)" if is_eng else r"SLD 실수부 ($10^{-6}\ \mathrm{\AA}^{-2}$)"
     lbl_sld_title = "Scattering Length Density (SLD) Profile" if is_eng else "산란 길이 밀도(SLD) 프로파일"
 
     ax_rho.plot(z_depth / 10.0, rho_depth, color="#1E40AF", lw=2.0)

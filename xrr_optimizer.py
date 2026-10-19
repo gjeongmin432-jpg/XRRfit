@@ -111,11 +111,11 @@ def generate_heuristic_bounds(
         rho_init = nom_rho
 
         if is_surface:
-            d_init = min(20.0, max(5.0, total_est_d * 0.12))
-            d_bounds = (5.0, 35.0)
-            sig_bounds = (0.1, 3.5)
-            sig_init = 1.0
-            rho_bounds = (max(nom_rho * 0.70, 1.5), nom_rho * 1.30)
+            d_init = min(22.0, max(8.0, total_est_d * 0.12))
+            d_bounds = (8.0, 35.0)
+            sig_bounds = (0.05, 2.0)
+            sig_init = 0.5
+            rho_bounds = (1.8, max(nom_rho * 1.15, 6.0))
         elif is_oxide and not has_surface_above:
             d_init = min(20.0, max(8.0, total_est_d * 0.10))
             d_bounds = (5.0, 40.0)
@@ -477,10 +477,10 @@ def fit_xrr(
         l_max = min(40.0, init_L * 2.5)
         bounds_list.append((l_min, l_max))
 
-    # Optional: Auto-fit beam resolution FWHM (0.012° ~ 0.040°) to perfectly match fringe valleys
+    # Optional: Auto-fit beam resolution FWHM (0.008° ~ 0.035°) to perfectly match fringe valleys
     fit_fwhm = (resolution_fwhm_deg is not None and resolution_fwhm_deg > 0)
     if fit_fwhm:
-        bounds_list.append((0.012, 0.042))
+        bounds_list.append((0.008, 0.035))
 
     # 2. Weighting Vector: 1~5차 Fringe 및 임계각 에지에 최우선 가중치 집중
     weights = np.full_like(th, 0.05, dtype=np.float64)
@@ -491,21 +491,25 @@ def fit_xrr(
     low_spill = (th < 0.48 / 2.0)
     weights[low_spill] = 0.5
 
-    # 전반사 임계각 에지 (0.48° ~ 0.70°): 4.5x (임계각 절벽 정합)
-    crit_mask = (th >= 0.48 / 2.0) & (th <= max(th_c * 1.30, 0.70 / 2.0))
-    weights[crit_mask] = 4.5
+    # 전반사 임계각 에지 (0.48° ~ 0.72°): 6.0x (임계각 고원 어깨와 감쇠 절벽 최우선 정합)
+    crit_mask = (th >= 0.48 / 2.0) & (th <= max(th_c * 1.35, 0.72 / 2.0))
+    weights[crit_mask] = 6.0
+
+    # 1차 Kiessig 진동 골 (First Valley, 0.75° ~ 0.88°): 8.0x (초반부 1차 간섭 골의 깊이 일치)
+    v1_mask = (th >= 0.75 / 2.0) & (th <= 0.88 / 2.0)
+    weights[v1_mask] = 8.0
 
     # Fringes 1~5 집중 구간: 4.0x (Kiessig Fringe 마루와 골 완벽 정합)
     if len(feature_report.fringes) >= 5:
         th_5th = feature_report.fringes[4].theta
-        low_fringe_mask = (th > 0.70 / 2.0) & (th <= th_5th * 1.05)
+        low_fringe_mask = (th > 0.88 / 2.0) & (th <= th_5th * 1.05)
         weights[low_fringe_mask] = 4.0
     elif len(feature_report.fringes) >= 3:
         th_last = feature_report.fringes[-1].theta
-        low_fringe_mask = (th > 0.70 / 2.0) & (th <= th_last * 1.05)
+        low_fringe_mask = (th > 0.88 / 2.0) & (th <= th_last * 1.05)
         weights[low_fringe_mask] = 4.0
     else:
-        low_fringe_mask = (th > 0.70 / 2.0) & (th <= th_c + 0.75)
+        low_fringe_mask = (th > 0.88 / 2.0) & (th <= th_c + 0.75)
         weights[low_fringe_mask] = 4.0
 
     sum_weights = np.sum(weights)
