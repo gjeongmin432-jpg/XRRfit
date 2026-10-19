@@ -66,12 +66,14 @@ import xrr_materials
 import xrr_features
 import xrr_engine
 import xrr_optimizer
+import xrr_origin_exporter
 
 importlib.reload(xrr_parser)
 importlib.reload(xrr_materials)
 importlib.reload(xrr_features)
 importlib.reload(xrr_engine)
 importlib.reload(xrr_optimizer)
+importlib.reload(xrr_origin_exporter)
 
 from xrr_parser import load_xrr_file, XRRData
 from xrr_materials import (
@@ -97,6 +99,15 @@ from xrr_optimizer import (
     explore_native_oxide,
     FitResult,
     FitProgress
+)
+from xrr_origin_exporter import (
+    generate_origin_curve_dat,
+    generate_origin_curve_df,
+    generate_origin_depth_dat,
+    generate_origin_depth_df,
+    generate_origin_params_df,
+    generate_origin_excel_workbook,
+    generate_origin_zip_package
 )
 
 # ----------------------------------------------------------------------
@@ -1085,6 +1096,87 @@ with tab2:
         ]
         st.dataframe(pd.DataFrame(leaderboard_data), use_container_width=True)
 
+        # ------------------------------------------------------------------
+        # [OriginLab 전용 피팅 데이터 즉시 내보내기 (Export for OriginLab)]
+        # ------------------------------------------------------------------
+        st.markdown("---")
+        st.markdown("#### 📊 OriginLab 그래프 작성용 데이터 즉시 내보내기 (Origin Export)")
+        st.markdown(
+            "Origin에 바로 넣어서 논문 및 보고서용 그래프를 그릴 수 있도록 "
+            "**실측값(Exp), 피팅값(Fit), 로그 강도($\\log_{10} I$), 잔차(Residual), 산란 벡터($q_z$)** 데이터가 "
+            "Long Name / Units / Comments 표준 헤더와 함께 서식화되어 제공됩니다."
+        )
+
+        col_orig_zip, col_orig_xl, col_orig_dat, col_orig_csv = st.columns(4)
+
+        z_dep_t2, rho_dep_t2, sld_dep_t2 = calculate_depth_profile(res.best_stack)
+        raw_fn = getattr(data, "filename", "experimental_xrr.xrdml")
+
+        with col_orig_zip:
+            zip_bytes_t2 = generate_origin_zip_package(
+                res, res.best_stack, z_dep_t2 / 10.0, rho_dep_t2, sld_dep_t2,
+                raw_filename=raw_fn
+            )
+            st.download_button(
+                "📦 Origin 종합 패키지 (.zip)",
+                data=zip_bytes_t2,
+                file_name=f"XRR_Origin_Package_{res.best_engine.split()[0]}.zip",
+                mime="application/zip",
+                type="primary",
+                use_container_width=True,
+                help="피팅 곡선(.dat/.csv), 깊이 프로파일(.dat/.csv), 파라미터 요약 표, 다중 시트 통합 엑셀(.xlsx), 빠른 시작 가이드 텍스트가 모두 압축되어 있습니다."
+            )
+
+        with col_orig_xl:
+            xl_bytes_t2 = generate_origin_excel_workbook(
+                res, res.best_stack, z_dep_t2 / 10.0, rho_dep_t2, sld_dep_t2,
+                raw_filename=raw_fn
+            )
+            st.download_button(
+                "📑 Origin 통합 엑셀 (.xlsx)",
+                data=xl_bytes_t2,
+                file_name="XRR_Fitting_Origin.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                help="Origin의 'Import Excel'로 바로 불러올 수 있는 다중 시트(피팅 곡선, 깊이 프로파일, 파라미터, 요약) 통합 엑셀 파일입니다."
+            )
+
+        with col_orig_dat:
+            dat_curve_str = generate_origin_curve_dat(res, raw_filename=raw_fn)
+            st.download_button(
+                "📈 피팅 곡선 (.dat / ASCII)",
+                data=dat_curve_str.encode("utf-8"),
+                file_name="XRR_Fitting_Curve_Origin.dat",
+                mime="text/plain",
+                use_container_width=True,
+                help="Origin 워크시트에 드래그 앤 드롭 시 열 이름(Long Name), 단위(Units), 설명(Comments)이 자동 지정되는 탭 구분 DAT 파일입니다."
+            )
+
+        with col_orig_csv:
+            df_curve_orig = generate_origin_curve_df(res)
+            st.download_button(
+                "📄 피팅 곡선 (.csv)",
+                data=df_curve_orig.to_csv(index=False).encode("utf-8-sig"),
+                file_name="XRR_Fitting_Curve.csv",
+                mime="text/csv",
+                use_container_width=True,
+                help="일반 CSV 형식으로 TwoTheta, Theta, Qz, Exp, Fit, Log10_Exp, Log10_Fit, Residual 열이 포함되어 있습니다."
+            )
+
+        with st.expander("💡 OriginLab에서 3초 만에 논문용 그래프 그리는 방법 (Click to Expand)", expanded=False):
+            st.markdown("""
+            1. **초간편 불러오기**: 다운로드한 `.dat` 또는 `.xlsx` 파일을 실행 중인 Origin 화면으로 **마우스 드래그 앤 드롭**하세요.
+            2. **실측값 vs 피팅값 오버레이 플롯**:
+               - **X축**: `TwoTheta_deg` (Col A) 선택
+               - **실측값(Y)**: `Log10_Exp` (Col F) 선택 → 마커 심볼(Scatter, 검정색 원형 마커, 크기 2.5~3pt)
+               - **피팅값(Y)**: `Log10_Fit` (Col G) 선택 → 선(Line, 빨간색 `#DC2626` 실선, 두께 1.5pt)
+            3. **하단 잔차(Residual) 플롯 (논문 게재 양식)**:
+               - **X축**: `TwoTheta_deg`, **Y축**: `Residual_Log` (Col H) 선택 → 파란색 실선 (선폭 1.0pt, Y=0 기준선 점선)
+            4. **깊이 프로파일 플롯 (Depth Profile)**:
+               - 통합 엑셀의 `Depth_SLD_Profile` 시트 또는 `02_Depth_SLD_Profile_Origin.dat`를 드래그 앤 드롭 후,
+               - **X축**: `Depth_z_nm`, **Y축**: `Mass_Density_g_cm3` 및 `Real_SLD_1e6_invA2` 플롯
+            """)
+
 
 # ----------------------------------------------------------------------
 # [탭 3] 도출된 물성치 및 깊이 프로파일
@@ -1166,52 +1258,88 @@ with tab3:
 
     # 결과 파일 및 리포트 내보내기
     st.markdown("---")
-    st.markdown("#### 💾 분석 결과 및 성적서 내보내기")
+    st.markdown("#### 💾 OriginLab 전용 데이터 및 종합 분석 결과 내보내기")
 
-    col_csv1, col_csv2, col_rep = st.columns(3)
+    raw_fn = getattr(data, "filename", "experimental_xrr.xrdml")
+    fit_r: Optional[FitResult] = st.session_state.fit_result
 
-    # 1. 파라미터 CSV 다운로드
-    with col_csv1:
+    # 1행: OriginLab 전용 올인원 다운로드 버튼 그룹
+    if fit_r:
+        st.markdown("##### 📦 1. OriginLab 올인원 통합 내보내기 (권장)")
+        c_all_zip, c_all_xl = st.columns(2)
+        with c_all_zip:
+            zip_all_bytes = generate_origin_zip_package(
+                fit_r, active_stack, z_depth / 10.0, rho_depth, sld_depth,
+                raw_filename=raw_fn
+            )
+            st.download_button(
+                "📦 Origin 종합 일괄 패키지 다운로드 (.ZIP)",
+                data=zip_all_bytes,
+                file_name=f"XRR_Origin_Package_{raw_fn.rsplit('.', 1)[0]}.zip",
+                mime="application/zip",
+                type="primary",
+                use_container_width=True,
+                help="피팅 곡선(.dat/.csv), 깊이 프로파일(.dat/.csv), 파라미터 요약 표, 다중 시트 통합 엑셀(.xlsx), 빠른 시작 가이드 텍스트가 모두 포함되어 있습니다."
+            )
+        with c_all_xl:
+            xl_all_bytes = generate_origin_excel_workbook(
+                fit_r, active_stack, z_depth / 10.0, rho_depth, sld_depth,
+                raw_filename=raw_fn
+            )
+            st.download_button(
+                "📑 Origin 다중 시트 통합 엑셀 다운로드 (.XLSX)",
+                data=xl_all_bytes,
+                file_name=f"XRR_Fitting_Origin_{raw_fn.rsplit('.', 1)[0]}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                help="Origin의 'Import Excel' 메뉴로 바로 불러올 수 있는 다중 시트 통합 문서입니다."
+            )
+
+    st.markdown("##### 📄 2. 항목별 개별 데이터 파일 다운로드")
+    col_d1, col_d2, col_d3, col_d4 = st.columns(4)
+
+    with col_d1:
+        if fit_r:
+            dat_curve_t3 = generate_origin_curve_dat(fit_r, raw_filename=raw_fn)
+            st.download_button(
+                "📈 피팅 곡선 (.DAT for Origin)",
+                data=dat_curve_t3.encode("utf-8"),
+                file_name="XRR_Fitting_Curve_Origin.dat",
+                mime="text/plain",
+                use_container_width=True,
+                help="Origin 3행 헤더(Long Name, Units, Comments)가 적용된 DAT 파일"
+            )
+        else:
+            st.button("📈 피팅 곡선 (피팅 후 활성화)", disabled=True, use_container_width=True)
+
+    with col_d2:
+        dat_depth_t3 = generate_origin_depth_dat(z_depth / 10.0, rho_depth, sld_depth, active_stack)
+        st.download_button(
+            "🌊 깊이 프로파일 (.DAT for Origin)",
+            data=dat_depth_t3.encode("utf-8"),
+            file_name="XRR_Depth_Profile_Origin.dat",
+            mime="text/plain",
+            use_container_width=True,
+            help="Origin 3행 헤더(Long Name, Units, Comments)가 적용된 깊이-밀도 DAT 파일"
+        )
+
+    with col_d3:
         csv_params = df_params.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
-            "📥 도출 파라미터 다운로드 (CSV)",
+            "📐 박막 물성 파라미터 (.CSV)",
             data=csv_params,
-            file_name="xrr_도출_박막물성치.csv",
+            file_name="XRR_Layer_Parameters.csv",
             mime="text/csv",
             use_container_width=True
         )
 
-    # 2. 피팅 곡선 CSV 다운로드
-    with col_csv2:
-        if st.session_state.fit_result:
-            fit_r: FitResult = st.session_state.fit_result
-            df_curve = pd.DataFrame({
-                "TwoTheta_deg": fit_r.two_theta,
-                "Theta_deg": fit_r.theta,
-                "q_z_A-1": fit_r.q_z,
-                "실측강도_CPS": fit_r.experimental_intensity,
-                "피팅강도_CPS": fit_r.simulated_intensity,
-                "로그잔차_Residual": fit_r.residual_log
-            })
-            csv_curve = df_curve.to_csv(index=False).encode("utf-8-sig")
-            st.download_button(
-                "📥 피팅 곡선 데이터 다운로드 (CSV)",
-                data=csv_curve,
-                file_name="xrr_피팅_곡선데이터.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-        else:
-            st.button("📥 피팅 곡선 다운로드 (피팅 후 활성화)", disabled=True, use_container_width=True)
-
-    # 3. 상세 분석 성적서 TXT 내보내기
-    with col_rep:
-        fit_r = st.session_state.fit_result
+    with col_d4:
         best_eng = fit_r.best_engine if fit_r else "미수행"
         mse_str = f"{fit_r.log_mse:.5f}" if fit_r else "미수행"
         r_str = f"{fit_r.r_factor*100:.2f}%" if fit_r else "미수행"
         chi2_str = f"{fit_r.reduced_chi2:.3f}" if fit_r else "미수행"
         range_str = f"[{fit_r.start_two_theta:.3f}°, {fit_r.end_two_theta:.3f}°]" if fit_r else "미수행"
+        match_str = f"{getattr(fit_r, 'match_rate', 0.0):.2f}%" if fit_r else "미수행"
 
         report_text = f"""================================================================================
                     X-선 반사율(XRR) 자동 분석 및 피팅 성적서
@@ -1231,9 +1359,10 @@ X-선 광원 파장: {data.wavelength_angstrom:.5f} Å ({data.wavelength_nm:.5f}
 [2. 멀티 물리 엔진 피팅 결과]
 - 최적 채택 엔진: {best_eng}
 - 피팅 적용 각도 범위: {range_str}
-- 로그 평균제곱오차 (Log-MSE): {mse_str}
+- 그래프 오버랩 일치율 (Match Rate): {match_str}
 - 결정학적 R-팩터 (오차율): {r_str}
 - 축소 카이제곱 (Reduced Chi2): {chi2_str}
+- 로그 평균제곱오차 (Log-MSE): {mse_str}
 
 [3. 최종 도출된 층별 박막 물성치 요약]
 {df_params.to_string(index=False)}
@@ -1241,7 +1370,7 @@ X-선 광원 파장: {data.wavelength_angstrom:.5f} Å ({data.wavelength_nm:.5f}
 ================================================================================
 """
         st.download_button(
-            "📄 분석 성적서 다운로드 (TXT)",
+            "📄 분석 성적서 (.TXT)",
             data=report_text.encode("utf-8-sig"),
             file_name="xrr_분석성적서.txt",
             mime="text/plain",
